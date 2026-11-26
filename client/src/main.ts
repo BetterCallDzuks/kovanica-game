@@ -198,7 +198,11 @@ function startMatch(): void {
   const statusEl = document.getElementById("hud-status")!;
 
   const wsHost = window.location.hostname || "localhost";
-  const wsUrl = (import.meta.env.VITE_WS_URL as string | undefined) ?? `ws://${wsHost}:8787`;
+  const defaultWsUrl =
+    window.location.protocol === "https:"
+      ? `wss://${window.location.host}/foundry-ws`
+      : `ws://${wsHost}:8787`;
+  const wsUrl = (import.meta.env.VITE_WS_URL as string | undefined) ?? defaultWsUrl;
 
   let matchEndRendered = false;
 
