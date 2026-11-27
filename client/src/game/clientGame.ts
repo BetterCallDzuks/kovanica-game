@@ -85,6 +85,7 @@ export class ClientGame {
     fillBots: boolean;
     walletAddress?: string;
     sessionKeyActive?: boolean;
+    stealthMetaAddress?: string;
   }): void {
     this.callbacks.onStatus("Connecting to Foundry Server...");
     const ws = new WebSocket(params.wsUrl);
@@ -99,6 +100,7 @@ export class ClientGame {
         fillBots: params.fillBots,
         walletAddress: params.walletAddress,
         sessionKeyActive: params.sessionKeyActive,
+        stealthMetaAddress: params.stealthMetaAddress,
       };
       ws.send(JSON.stringify(joinMsg));
     };

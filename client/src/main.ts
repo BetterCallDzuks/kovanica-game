@@ -10,8 +10,11 @@ import type {
 import {
   activateWaveCSessionKey,
   connectKovanicaWallet,
+  connectManualPro21Address,
   createInitialWalletState,
+  fetchLiveChainTelemetry,
   shortAddress,
+  validateStealthMetaAddress,
   type WalletSessionState,
 } from "./chain/kovanicaAdapter";
 import { ClientGame } from "./game/clientGame";
@@ -52,6 +55,9 @@ function renderLobby(): void {
           <div class="wallet-box">
             <div class="pill-row">
               <span class="pill ${wallet.connected ? "gold" : ""}">${wallet.network.name}</span>
+              <span class="pill ${wallet.rpcHealthy ? "teal" : ""}">
+                ${wallet.rpcHealthy && wallet.rpcHeight !== undefined ? `RPC #${wallet.rpcHeight.toLocaleString()}` : "RPC Syncing…"}
+              </span>
               <span class="pill ${wallet.sessionKeyActive ? "teal" : ""}">
                 ${wallet.sessionKeyActive ? `Session Key: ${wallet.sessionKeyExpiry}` : "Wave C Session Key: Off"}
               </span>
@@ -60,7 +66,8 @@ function renderLobby(): void {
               ${
                 wallet.connected
                   ? `<span class="pill gold mono">${shortAddress(wallet.address)} · ${wallet.kvncBalance} KVNC · ${wallet.gameTokenBalance} ${wallet.network.gameTokenSymbol}</span>`
-                  : `<button class="btn btn-teal" id="btn-connect">Connect Kovanica Wallet</button>`
+                  : `<button class="btn btn-teal" id="btn-connect">Connect Extension</button>
+                     <button class="btn" id="btn-manual-wallet">PRO-21 Address</button>`
               }
               ${
                 wallet.connected && !wallet.sessionKeyActive
@@ -110,6 +117,11 @@ function renderLobby(): void {
               <input type="checkbox" id="chk-stealth" ${wallet.stealthPayoutEnabled ? "checked" : ""} />
               KVP-103 Stealth Payouts
             </label>
+            ${
+              wallet.stealthPayoutEnabled
+                ? `<input type="text" id="input-stealth" value="${wallet.stealthMetaAddress ?? ""}" placeholder="st:kvnc:..." style="width:180px" />`
+                : ""
+            }
           </div>
           <div class="input-inline">
             <span class="card-meta mono" id="lobby-status">${statusText}</span>
@@ -150,12 +162,43 @@ function renderLobby(): void {
   const stealthChk = document.getElementById("chk-stealth") as HTMLInputElement;
   stealthChk.onchange = () => {
     wallet = { ...wallet, stealthPayoutEnabled: stealthChk.checked };
+    renderLobby();
   };
+
+  const stealthInput = document.getElementById("input-stealth") as HTMLInputElement | null;
+  if (stealthInput) {
+    stealthInput.oninput = () => {
+      const val = stealthInput.value.trim();
+      wallet = {
+        ...wallet,
+        stealthMetaAddress: val && validateStealthMetaAddress(val) ? val : undefined,
+      };
+      statusText = val && !validateStealthMetaAddress(val) ? "Invalid KVP-103 st:kvnc:... address" : "";
+      const stEl = document.getElementById("lobby-status");
+      if (stEl) stEl.textContent = statusText;
+    };
+  }
 
   const btnConnect = document.getElementById("btn-connect");
   if (btnConnect) {
     btnConnect.onclick = async () => {
       wallet = await connectKovanicaWallet(wallet);
+      renderLobby();
+    };
+  }
+
+  const btnManualWallet = document.getElementById("btn-manual-wallet");
+  if (btnManualWallet) {
+    btnManualWallet.onclick = async () => {
+      const entered = window.prompt("Enter your Kovanica PRO-21 address (64-char kvnc...dag or tknc...dag):");
+      if (!entered) return;
+      const res = await connectManualPro21Address(wallet, entered);
+      if (!res.ok) {
+        statusText = res.error ?? "Invalid PRO-21 address";
+      } else {
+        wallet = res.state;
+        statusText = "Connected via PRO-21 address";
+      }
       renderLobby();
     };
   }
@@ -228,7 +271,7 @@ function startMatch(): void {
         if (!matchEndRendered) {
           matchEndRendered = true;
           document.exitPointerLock?.();
-          renderMatchEnd(endOverlay, snapshot);
+          renderMatchEnd(endOverlay, snapshot, localPlayer);
         }
         return;
       }
@@ -257,6 +300,7 @@ function startMatch(): void {
     fillBots,
     walletAddress: wallet.address,
     sessionKeyActive: wallet.sessionKeyActive,
+    stealthMetaAddress: wallet.stealthPayoutEnabled ? wallet.stealthMetaAddress : undefined,
   });
 }
 
@@ -384,25 +428,32 @@ function renderHud(
   `;
 }
 
-function renderMatchEnd(el: HTMLElement, snap: ServerSnapshot): void {
+function renderMatchEnd(el: HTMLElement, snap: ServerSnapshot, localPlayer: PlayerState): void {
   const end = snap.matchEnd!;
+  const myReceipt = end.playerRewards?.[localPlayer.id];
+  const rewardReason = myReceipt?.reason ?? end.rewardReason;
+  const estToken = myReceipt?.estimatedGameToken ?? end.estimatedGameToken;
+  const mmrDelta = myReceipt?.rankedPointsDelta ?? end.rankedPointsDelta;
+  const capLeft = myReceipt?.dailyCapRemaining;
+  const matchHashShort = end.matchHash ? `${end.matchHash.slice(0, 10)}…${end.matchHash.slice(-6)}` : "n/a";
   el.style.display = "flex";
   el.innerHTML = `
     <div class="modal-box" style="max-width:660px">
       <div class="section-label">${MODE_CONFIGS[end.mode].name} · MATCH COMPLETE</div>
       <div class="brand-title" style="font-size:28px;margin-bottom:6px"><span>${end.winnerLabel}</span></div>
       <div class="card-meta mono" style="margin-bottom:14px">
-        MVP: ${end.mvpName} (${end.mvpScore} pts) · Anti-Cheat: ${end.antiCheatStatus.toUpperCase()}
+        MVP: ${end.mvpName} (${end.mvpScore} pts) · Anti-Cheat: ${end.antiCheatStatus.toUpperCase()} · Attestation: ${matchHashShort}
       </div>
 
       <div style="background:rgba(242,169,0,0.08);border:1px solid rgba(242,169,0,0.3);border-radius:10px;padding:12px;margin-bottom:14px;text-align:left">
         <div class="mono" style="font-size:12px;color:#F2A900;font-weight:700">
-          DUAL-TOKEN SETTLEMENT (${wallet.network.name})
+          DUAL-TOKEN SETTLEMENT (${wallet.network.name}) · ${myReceipt?.status?.toUpperCase() ?? "PREVIEW"}
         </div>
-        <div class="card-meta" style="margin-top:4px">${end.rewardReason}</div>
-        <div class="mono" style="font-size:13px;margin-top:8px;display:flex;gap:16px">
-          <span>${wallet.network.gameTokenSymbol}: <strong>+${end.estimatedGameToken}</strong></span>
-          <span>Ranked MMR: <strong>${end.rankedPointsDelta >= 0 ? "+" : ""}${end.rankedPointsDelta}</strong></span>
+        <div class="card-meta" style="margin-top:4px">${rewardReason}</div>
+        <div class="mono" style="font-size:13px;margin-top:8px;display:flex;gap:16px;flex-wrap:wrap">
+          <span>${wallet.network.gameTokenSymbol}: <strong>+${estToken}</strong></span>
+          <span>Ranked MMR: <strong>${mmrDelta >= 0 ? "+" : ""}${mmrDelta}</strong></span>
+          ${capLeft !== undefined ? `<span>Daily Cap Left: <strong>${capLeft}/250</strong></span>` : ""}
           <span>Stealth KVP-103: <strong>${wallet.stealthPayoutEnabled ? "ON" : "OFF"}</strong></span>
         </div>
       </div>
@@ -443,3 +494,7 @@ function renderMatchEnd(el: HTMLElement, snap: ServerSnapshot): void {
 }
 
 renderLobby();
+void fetchLiveChainTelemetry(wallet.network).then((t) => {
+  wallet = { ...wallet, rpcHealthy: t.rpcHealthy, rpcHeight: t.rpcHeight };
+  if (!activeGame) renderLobby();
+});

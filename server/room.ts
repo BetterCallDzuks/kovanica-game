@@ -35,8 +35,9 @@ import type {
   TeamId,
   TracerEvent,
 } from "../shared/types";
-import { AntiCheatTracker, computeMatchReward } from "./anticheat";
+import { AntiCheatTracker } from "./anticheat";
 import { BotController } from "./bots";
+import { EpochSettlementLedger } from "./settlement";
 
 const BOT_NAMES = [
   "FORGE-01",
@@ -75,15 +76,22 @@ export class GameRoom {
 
   private readonly antiCheat = new AntiCheatTracker();
   private readonly botAi = new BotController();
+  private readonly settlement: EpochSettlementLedger;
   private readonly fillBots: boolean;
   private eventSeq = 1;
   private scoreTickAccumMs = 0;
   private serverTimeMs = 0;
 
-  constructor(id: string, mode: GameModeId, fillBots = true) {
+  constructor(
+    id: string,
+    mode: GameModeId,
+    fillBots = true,
+    settlement?: EpochSettlementLedger
+  ) {
     this.id = id;
     this.mode = mode;
     this.fillBots = fillBots;
+    this.settlement = settlement ?? new EpochSettlementLedger();
     this.remainingMs = MODE_CONFIGS[mode].durationMs;
     this.initNodes();
   }
@@ -125,6 +133,8 @@ export class GameRoom {
     name: string;
     classId: ClassId;
     walletAddress?: string;
+    sessionKeyActive?: boolean;
+    stealthMetaAddress?: string;
   }): PlayerState {
     const team = this.assignTeam();
     const player = this.createPlayer({
@@ -134,6 +144,8 @@ export class GameRoom {
       team,
       classId: params.classId,
       walletAddress: params.walletAddress,
+      sessionKeyActive: params.sessionKeyActive,
+      stealthMetaAddress: params.stealthMetaAddress,
     });
     this.players.set(player.id, player);
     if (this.fillBots) {
@@ -239,6 +251,8 @@ export class GameRoom {
     team: TeamId;
     classId: ClassId;
     walletAddress?: string;
+    sessionKeyActive?: boolean;
+    stealthMetaAddress?: string;
   }): PlayerState {
     const cls = CLASS_CONFIGS[params.classId];
     const p: PlayerState = {
@@ -246,6 +260,8 @@ export class GameRoom {
       name: params.name,
       isBot: params.isBot,
       walletAddress: params.walletAddress,
+      sessionKeyActive: params.sessionKeyActive,
+      stealthMetaAddress: params.stealthMetaAddress,
       team: params.team,
       classId: params.classId,
       queuedClassId: params.classId,
@@ -361,7 +377,14 @@ export class GameRoom {
 
       if (!input) continue;
 
+      const prevX = p.x;
+      const prevZ = p.z;
       stepPlayerPhysics(p, input, dt, this.barriers);
+      if (!p.isBot) {
+        const horizDist = Math.hypot(p.x - prevX, p.z - prevZ);
+        this.antiCheat.recordMovementCheck(p.id, horizDist, dt);
+        this.antiCheat.recordAimSample(p.id, input.yaw);
+      }
       p.lastProcessedSeq = input.seq;
 
       if (input.reload && p.reloadingMs === 0 && p.ammo < p.maxAmmo) {
@@ -795,27 +818,22 @@ export class GameRoom {
 
     const mvp = leaderboard[0] ?? { name: "NONE", score: 0 };
     const antiCheatStatus = this.antiCheat.getOverallStatus(allPlayers);
-    const sampleHuman = allPlayers.find((p) => !p.isBot) ?? allPlayers[0];
-    const won = sampleHuman
-      ? modeCfg.isTeamMode
-        ? sampleHuman.team === winnerTeam
-        : sampleHuman.id === winnerTeam
-      : false;
+    const settled = this.settlement.settleMatch({
+      roomId: this.id,
+      mode: this.mode,
+      tick: this.tick,
+      goldScore: this.goldScore,
+      tealScore: this.tealScore,
+      hasBots: this.hasBots,
+      humanCount: this.humanCount,
+      players: allPlayers,
+      winnerTeam,
+      isTeamMode: modeCfg.isTeamMode,
+      antiCheatStatus,
+    });
 
-    const reward = sampleHuman
-      ? computeMatchReward({
-          hasBots: this.hasBots,
-          humanCount: this.humanCount,
-          player: sampleHuman,
-          won,
-          antiCheatStatus,
-        })
-      : {
-          isRewardEligible: false,
-          reason: "No human players.",
-          estimatedGameToken: 0,
-          rankedPointsDelta: 0,
-        };
+    const sampleHuman = allPlayers.find((p) => !p.isBot) ?? allPlayers[0];
+    const sampleReceipt = sampleHuman ? settled.playerRewards[sampleHuman.id] : undefined;
 
     this.matchEnd = {
       mode: this.mode,
@@ -823,10 +841,13 @@ export class GameRoom {
       winnerTeam,
       goldScore: this.goldScore,
       tealScore: this.tealScore,
-      isRewardEligible: reward.isRewardEligible,
-      rewardReason: reward.reason,
-      estimatedGameToken: reward.estimatedGameToken,
-      rankedPointsDelta: reward.rankedPointsDelta,
+      isRewardEligible: sampleReceipt?.isRewardEligible ?? false,
+      rewardReason: sampleReceipt?.reason ?? "No human players.",
+      estimatedGameToken: sampleReceipt?.estimatedGameToken ?? 0,
+      rankedPointsDelta: sampleReceipt?.rankedPointsDelta ?? 0,
+      matchHash: settled.matchHash,
+      epochEligibleAt: settled.epochEligibleAt,
+      playerRewards: settled.playerRewards,
       mvpName: mvp.name,
       mvpScore: mvp.score,
       leaderboard,
