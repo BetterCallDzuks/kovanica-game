@@ -29,6 +29,8 @@ let selectedClass: ClassId = "striker";
 let selectedSkin: SkinId = "standard_foundry";
 let playerName = "OPERATOR";
 let fillBots = true;
+let touchControlsEnabled =
+  typeof window !== "undefined" && Boolean(window.matchMedia?.("(pointer: coarse)").matches);
 let statusText = "";
 let activeGame: ClientGame | null = null;
 
@@ -248,9 +250,26 @@ function startMatch(): void {
         </div>
         <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap">
           <button class="btn btn-primary" id="btn-resume">CLICK TO LOCK AIM & PLAY</button>
+          <button class="btn" id="btn-touch-toggle">TOUCH HUD: ${touchControlsEnabled ? "ON" : "OFF"}</button>
           <button class="btn" id="btn-leave">RETURN TO LOBBY</button>
         </div>
         <div class="card-meta mono" id="hud-status" style="margin-top:14px"></div>
+      </div>
+    </div>
+    <div id="touch-overlay" style="display:${touchControlsEnabled ? "block" : "none"};position:fixed;inset:0;pointer-events:none;z-index:25">
+      <div style="position:absolute;left:18px;bottom:110px;display:grid;grid-template-columns:repeat(3,48px);gap:6px;pointer-events:auto">
+        <div></div>
+        <button class="btn" id="tch-up" style="padding:12px 0">▲</button>
+        <div></div>
+        <button class="btn" id="tch-left" style="padding:12px 0">◄</button>
+        <button class="btn" id="tch-down" style="padding:12px 0">▼</button>
+        <button class="btn" id="tch-right" style="padding:12px 0">►</button>
+      </div>
+      <div style="position:absolute;right:18px;bottom:110px;display:grid;grid-template-columns:repeat(2,72px);gap:8px;pointer-events:auto">
+        <button class="btn btn-primary" id="tch-fire" style="padding:14px 0">FIRE</button>
+        <button class="btn btn-teal" id="tch-ability" style="padding:14px 0">SKILL</button>
+        <button class="btn" id="tch-jump" style="padding:12px 0">JUMP</button>
+        <button class="btn" id="tch-cam" style="padding:12px 0">CAM</button>
       </div>
     </div>
     <div class="overlay-center" id="end-overlay" style="display:none"></div>
@@ -309,10 +328,44 @@ function startMatch(): void {
   document.getElementById("btn-resume")!.onclick = () => {
     activeGame?.requestPointerLock();
   };
+  document.getElementById("btn-touch-toggle")!.onclick = () => {
+    touchControlsEnabled = !touchControlsEnabled;
+    const el = document.getElementById("touch-overlay");
+    if (el) el.style.display = touchControlsEnabled ? "block" : "none";
+    const btn = document.getElementById("btn-touch-toggle");
+    if (btn) btn.textContent = `TOUCH HUD: ${touchControlsEnabled ? "ON" : "OFF"}`;
+  };
   document.getElementById("btn-leave")!.onclick = () => {
     document.exitPointerLock?.();
     renderLobby();
   };
+
+  const bindHold = (id: string, onDown: () => void, onUp: () => void) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      onDown();
+    });
+    const release = () => onUp();
+    el.addEventListener("pointerup", release);
+    el.addEventListener("pointercancel", release);
+    el.addEventListener("pointerleave", release);
+  };
+  bindHold("tch-up", () => activeGame?.setTouchInput({ moveZ: 1 }), () => activeGame?.setTouchInput({ moveZ: 0 }));
+  bindHold("tch-down", () => activeGame?.setTouchInput({ moveZ: -1 }), () => activeGame?.setTouchInput({ moveZ: 0 }));
+  bindHold("tch-left", () => activeGame?.setTouchInput({ moveX: -1 }), () => activeGame?.setTouchInput({ moveX: 0 }));
+  bindHold("tch-right", () => activeGame?.setTouchInput({ moveX: 1 }), () => activeGame?.setTouchInput({ moveX: 0 }));
+  bindHold("tch-fire", () => activeGame?.setTouchInput({ fire: true }), () => activeGame?.setTouchInput({ fire: false }));
+  bindHold("tch-jump", () => activeGame?.setTouchInput({ jump: true }), () => activeGame?.setTouchInput({ jump: false }));
+  document.getElementById("tch-ability")?.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    activeGame?.setTouchInput({ ability: true });
+  });
+  document.getElementById("tch-cam")?.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    activeGame?.setTouchInput({ toggleCamera: true });
+  });
 
   activeGame.connect({
     wsUrl,
