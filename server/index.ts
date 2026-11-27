@@ -70,6 +70,7 @@ wss.on("connection", (ws) => {
         walletAddress: msg.walletAddress,
         sessionKeyActive: msg.sessionKeyActive,
         stealthMetaAddress: msg.stealthMetaAddress,
+        skinId: msg.skinId,
       });
       send(ws, {
         type: "welcome",

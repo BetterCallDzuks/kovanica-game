@@ -42,6 +42,11 @@ export class ClientGame {
   private keys = new Set<string>();
   private mouseFire = false;
   private mouseAds = false;
+  private touchMoveX = 0;
+  private touchMoveZ = 0;
+  private touchFire = false;
+  private touchJump = false;
+  private gamepadCameraWasPressed = false;
   private pendingAbility = false;
   private pendingReload = false;
   private queuedClass: ClassId | undefined;
@@ -77,6 +82,28 @@ export class ClientGame {
     this.audio.muted = muted;
   }
 
+  setTouchInput(partial: {
+    moveX?: number;
+    moveZ?: number;
+    fire?: boolean;
+    jump?: boolean;
+    ability?: boolean;
+    reload?: boolean;
+    toggleCamera?: boolean;
+    lookDx?: number;
+    lookDy?: number;
+  }): void {
+    if (partial.moveX !== undefined) this.touchMoveX = clamp(partial.moveX, -1, 1);
+    if (partial.moveZ !== undefined) this.touchMoveZ = clamp(partial.moveZ, -1, 1);
+    if (partial.fire !== undefined) this.touchFire = partial.fire;
+    if (partial.jump !== undefined) this.touchJump = partial.jump;
+    if (partial.ability) this.pendingAbility = true;
+    if (partial.reload) this.pendingReload = true;
+    if (partial.toggleCamera) this.cameraMode = this.cameraMode === "fps" ? "tps" : "fps";
+    if (partial.lookDx) this.yaw -= partial.lookDx * this.sensitivity * 1.4;
+    if (partial.lookDy) this.pitch = clamp(this.pitch - partial.lookDy * this.sensitivity * 1.4, -1.46, 1.46);
+  }
+
   connect(params: {
     wsUrl: string;
     name: string;
@@ -86,6 +113,7 @@ export class ClientGame {
     walletAddress?: string;
     sessionKeyActive?: boolean;
     stealthMetaAddress?: string;
+    skinId?: string;
   }): void {
     this.callbacks.onStatus("Connecting to Foundry Server...");
     const ws = new WebSocket(params.wsUrl);
@@ -101,6 +129,7 @@ export class ClientGame {
         walletAddress: params.walletAddress,
         sessionKeyActive: params.sessionKeyActive,
         stealthMetaAddress: params.stealthMetaAddress,
+        skinId: params.skinId,
       };
       ws.send(JSON.stringify(joinMsg));
     };
@@ -213,9 +242,61 @@ export class ClientGame {
     }
   }
 
+  private readGamepad(): {
+    moveX: number;
+    moveZ: number;
+    lookX: number;
+    lookY: number;
+    fire: boolean;
+    ads: boolean;
+    jump: boolean;
+    sprint: boolean;
+    reload: boolean;
+    ability: boolean;
+    toggleCamera: boolean;
+  } {
+    const pads = typeof navigator !== "undefined" && navigator.getGamepads ? navigator.getGamepads() : [];
+    const pad = pads.find((g): g is Gamepad => Boolean(g && g.connected));
+    if (!pad) {
+      return {
+        moveX: 0,
+        moveZ: 0,
+        lookX: 0,
+        lookY: 0,
+        fire: false,
+        ads: false,
+        jump: false,
+        sprint: false,
+        reload: false,
+        ability: false,
+        toggleCamera: false,
+      };
+    }
+    const dz = (v: number) => (Math.abs(v) < 0.16 ? 0 : v);
+    const camBtn = Boolean(pad.buttons[3]?.pressed);
+    const toggleCamera = camBtn && !this.gamepadCameraWasPressed;
+    this.gamepadCameraWasPressed = camBtn;
+    return {
+      moveX: dz(pad.axes[0] ?? 0),
+      moveZ: dz(-(pad.axes[1] ?? 0)),
+      lookX: dz(pad.axes[2] ?? 0),
+      lookY: dz(pad.axes[3] ?? 0),
+      fire: Boolean(pad.buttons[7]?.pressed || (pad.buttons[7]?.value ?? 0) > 0.3),
+      ads: Boolean(pad.buttons[6]?.pressed || (pad.buttons[6]?.value ?? 0) > 0.3),
+      jump: Boolean(pad.buttons[0]?.pressed),
+      sprint: Boolean(pad.buttons[10]?.pressed),
+      reload: Boolean(pad.buttons[2]?.pressed),
+      ability: Boolean(pad.buttons[5]?.pressed),
+      toggleCamera,
+    };
+  }
+
   private buildInputFrame(): InputFrame {
-    const moveZ = (this.keys.has("KeyW") ? 1 : 0) - (this.keys.has("KeyS") ? 1 : 0);
-    const moveX = (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0);
+    const gp = this.readGamepad();
+    const kbMoveZ = (this.keys.has("KeyW") ? 1 : 0) - (this.keys.has("KeyS") ? 1 : 0);
+    const kbMoveX = (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0);
+    const moveZ = clamp(kbMoveZ + this.touchMoveZ + gp.moveZ, -1, 1);
+    const moveX = clamp(kbMoveX + this.touchMoveX + gp.moveX, -1, 1);
     const kbFire = this.keys.has("KeyF");
     const kbAds = this.keys.has("KeyQ");
     const frame: InputFrame = {
@@ -224,12 +305,12 @@ export class ClientGame {
       moveZ,
       yaw: this.yaw,
       pitch: this.pitch,
-      jump: this.keys.has("Space"),
-      sprint: this.keys.has("ShiftLeft") || this.keys.has("ShiftRight"),
-      fire: (this.pointerLocked && this.mouseFire) || kbFire,
-      ads: (this.pointerLocked && this.mouseAds) || kbAds,
-      reload: this.pendingReload,
-      ability: this.pendingAbility,
+      jump: this.keys.has("Space") || this.touchJump || gp.jump,
+      sprint: this.keys.has("ShiftLeft") || this.keys.has("ShiftRight") || gp.sprint,
+      fire: (this.pointerLocked && this.mouseFire) || kbFire || this.touchFire || gp.fire,
+      ads: (this.pointerLocked && this.mouseAds) || kbAds || gp.ads,
+      reload: this.pendingReload || gp.reload,
+      ability: this.pendingAbility || gp.ability,
       desiredClass: this.queuedClass,
     };
     this.pendingReload = false;
@@ -255,9 +336,11 @@ export class ClientGame {
 
       if (!this.snapshot || !this.predictedPlayer) return;
 
-      // Laptop-friendly smooth Arrow Key look (works simultaneously with WASD)
-      const turnYaw = (this.keys.has("ArrowLeft") ? 1 : 0) - (this.keys.has("ArrowRight") ? 1 : 0);
-      const turnPitch = (this.keys.has("ArrowUp") ? 1 : 0) - (this.keys.has("ArrowDown") ? 1 : 0);
+      // Laptop-friendly Arrow Key + Gamepad right-stick look
+      const gp = this.readGamepad();
+      if (gp.toggleCamera) this.cameraMode = this.cameraMode === "fps" ? "tps" : "fps";
+      const turnYaw = (this.keys.has("ArrowLeft") ? 1 : 0) - (this.keys.has("ArrowRight") ? 1 : 0) - gp.lookX;
+      const turnPitch = (this.keys.has("ArrowUp") ? 1 : 0) - (this.keys.has("ArrowDown") ? 1 : 0) - gp.lookY;
       if (turnYaw !== 0) this.yaw += turnYaw * 2.4 * dt;
       if (turnPitch !== 0) this.pitch = clamp(this.pitch + turnPitch * 1.8 * dt, -1.46, 1.46);
 
@@ -265,14 +348,22 @@ export class ClientGame {
       if (this.predictedPlayer.alive && this.snapshot.phase === "playing") {
         const localInput: InputFrame = {
           seq: this.seq,
-          moveX: (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0),
-          moveZ: (this.keys.has("KeyW") ? 1 : 0) - (this.keys.has("KeyS") ? 1 : 0),
+          moveX: clamp(
+            (this.keys.has("KeyD") ? 1 : 0) - (this.keys.has("KeyA") ? 1 : 0) + this.touchMoveX + gp.moveX,
+            -1,
+            1
+          ),
+          moveZ: clamp(
+            (this.keys.has("KeyW") ? 1 : 0) - (this.keys.has("KeyS") ? 1 : 0) + this.touchMoveZ + gp.moveZ,
+            -1,
+            1
+          ),
           yaw: this.yaw,
           pitch: this.pitch,
-          jump: this.keys.has("Space"),
-          sprint: this.keys.has("ShiftLeft") || this.keys.has("ShiftRight"),
+          jump: this.keys.has("Space") || this.touchJump || gp.jump,
+          sprint: this.keys.has("ShiftLeft") || this.keys.has("ShiftRight") || gp.sprint,
           fire: false,
-          ads: this.mouseAds || this.keys.has("KeyQ"),
+          ads: this.mouseAds || this.keys.has("KeyQ") || gp.ads,
           reload: false,
           ability: false,
         };

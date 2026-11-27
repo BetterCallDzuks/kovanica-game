@@ -5,9 +5,12 @@ import {
   validateStealthMetaAddress,
 } from "../client/src/chain/kovanicaAdapter";
 import { AntiCheatTracker, computeMatchReward } from "../server/anticheat";
+import { FoundryEscrowManager } from "../server/escrow";
+import { WaveAGaslessRelayer } from "../server/relayer";
 import { GameRoom } from "../server/room";
 import { EpochSettlementLedger } from "../server/settlement";
 import { CLASS_CONFIGS, DAILY_GAME_TOKEN_CAP, TICK_MS } from "../shared/constants";
+import { SKIN_CATALOG, SKIN_ORDER } from "../shared/cosmetics";
 import { ARENA_HALF_X, CONTROL_NODES, GOLD_RELAY_POS, JUMP_PADS } from "../shared/map";
 import { getEyePosition, raycastCombat, stepPlayerPhysics } from "../shared/physics";
 import type { BarrierState, InputFrame, PlayerState } from "../shared/types";
@@ -349,5 +352,123 @@ describe("Phase A: Testnet Chain 2 Wallet, Wave C Session Key & Epoch Settlement
     }
     expect(lastSettled.playerRewards["p1"].status).toBe("flagged");
     expect(lastSettled.playerRewards["p1"].estimatedGameToken).toBe(0);
+  });
+});
+
+describe("Phase B: KVP-106 Skins, Wave A Gasless Relayer & Escrow Tournaments", () => {
+  it("enforces zero stat modifiers on KVP-106 cosmetic skins and executes atomic Wave A burn+mint", () => {
+    expect(SKIN_ORDER.length).toBeGreaterThanOrEqual(5);
+    for (const id of SKIN_ORDER) {
+      const s = SKIN_CATALOG[id];
+      expect(s.kvp106Collection).toBe("kovanica-foundry-s1");
+      expect(s.accentHex).toMatch(/^#[0-9a-fA-F]{6}$/);
+      expect(s.tracerHex).toMatch(/^#[0-9a-fA-F]{6}$/);
+    }
+
+    const relayer = new WaveAGaslessRelayer();
+    const wallet = `tknc${"c".repeat(57)}dag`;
+
+    // Claim sponsored epoch rewards once; reject duplicate claim
+    const c1 = relayer.claimSponsoredEpochRewards({
+      walletAddress: wallet,
+      matchHash: "a".repeat(64),
+      amount: 150,
+      sessionKeyActive: true,
+    });
+    expect(c1.ok).toBe(true);
+    expect(c1.newForgeBalance).toBe(150);
+    expect(c1.sponsoredFeeAtoms).toBeGreaterThan(0);
+
+    const dup = relayer.claimSponsoredEpochRewards({
+      walletAddress: wallet,
+      matchHash: "a".repeat(64),
+      amount: 150,
+      sessionKeyActive: true,
+    });
+    expect(dup.ok).toBe(false);
+
+    // Atomic Wave A craft: burn 120 FORGE + mint forged_amber KVP-106 NFT
+    const craft = relayer.craftSkinAtomicBatch({
+      walletAddress: wallet,
+      skinId: "forged_amber",
+      sessionKeyActive: true,
+    });
+    expect(craft.ok).toBe(true);
+    expect(craft.burnedForge).toBe(120);
+    expect(craft.remainingForgeBalance).toBe(30);
+    expect(craft.mintedAssetId).toMatch(/^[a-f0-9]{64}$/);
+    expect(relayer.getOwnedSkins(wallet)).toContain("forged_amber");
+
+    // Duplicate mint rejected; insufficient balance for 240 FORGE skin rejected
+    expect(
+      relayer.craftSkinAtomicBatch({ walletAddress: wallet, skinId: "forged_amber", sessionKeyActive: true }).ok
+    ).toBe(false);
+    expect(
+      relayer.craftSkinAtomicBatch({ walletAddress: wallet, skinId: "obsidian_gold", sessionKeyActive: true }).ok
+    ).toBe(false);
+  });
+
+  it("enforces 95%/5% KVNC escrow split and 100% anti-cheat refund in FoundryEscrowManager", () => {
+    const escrow = new FoundryEscrowManager();
+    const w1 = `tknc${"d".repeat(57)}dag`;
+    const w2 = `tknc${"e".repeat(57)}dag`;
+
+    // Out-of-bounds stake rejected
+    expect(
+      escrow.createWagerLobby({
+        creatorWallet: w1,
+        sessionKeyActive: true,
+        mode: "domination",
+        stakeKvnc: 9999,
+        maxPlayers: 2,
+      }).ok
+    ).toBe(false);
+
+    // Valid 1v1 10 KVNC wager -> 20 KVNC pot -> 19 KVNC winner / 1 KVNC protocol fee
+    const created = escrow.createWagerLobby({
+      creatorWallet: w1,
+      sessionKeyActive: true,
+      mode: "domination",
+      stakeKvnc: 10,
+      maxPlayers: 2,
+    });
+    expect(created.ok).toBe(true);
+    const id = created.record!.escrowId;
+
+    const joined = escrow.joinWagerLobby({ escrowId: id, playerWallet: w2, sessionKeyActive: true });
+    expect(joined.ok).toBe(true);
+    expect(joined.record!.status).toBe("locked");
+    expect(joined.record!.totalPotKvnc).toBe(20);
+
+    const settled = escrow.settleWagerLobby({
+      escrowId: id,
+      winnerWallets: [w1],
+      antiCheatStatus: "clean",
+    });
+    expect(settled.ok).toBe(true);
+    expect(settled.record!.status).toBe("settled");
+    expect(settled.record!.winnerPayouts![w1]).toBe(19);
+    expect(settled.record!.protocolFeeKvnc).toBe(1);
+
+    // Anti-cheat flagged match -> 100% refund to both players, 0 fee
+    const c2 = escrow.createWagerLobby({
+      creatorWallet: w1,
+      sessionKeyActive: true,
+      mode: "vault_rush",
+      stakeKvnc: 25,
+      maxPlayers: 2,
+    });
+    const id2 = c2.record!.escrowId;
+    escrow.joinWagerLobby({ escrowId: id2, playerWallet: w2, sessionKeyActive: true });
+    const refunded = escrow.settleWagerLobby({
+      escrowId: id2,
+      winnerWallets: [w1],
+      antiCheatStatus: "flagged",
+    });
+    expect(refunded.ok).toBe(true);
+    expect(refunded.record!.status).toBe("refunded");
+    expect(refunded.record!.protocolFeeKvnc).toBe(0);
+    expect(refunded.record!.winnerPayouts![w1]).toBe(25);
+    expect(refunded.record!.winnerPayouts![w2]).toBe(25);
   });
 });

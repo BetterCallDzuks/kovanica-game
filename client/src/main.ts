@@ -1,4 +1,5 @@
 import { CLASS_CONFIGS, CLASS_ORDER, MODE_CONFIGS } from "../../shared/constants";
+import { SKIN_CATALOG, SKIN_ORDER, type SkinId } from "../../shared/cosmetics";
 import type {
   CameraMode,
   ClassId,
@@ -25,6 +26,7 @@ const app = document.getElementById("app")!;
 let wallet: WalletSessionState = createInitialWalletState();
 let selectedMode: GameModeId = "domination";
 let selectedClass: ClassId = "striker";
+let selectedSkin: SkinId = "standard_foundry";
 let playerName = "OPERATOR";
 let fillBots = true;
 let statusText = "";
@@ -106,6 +108,19 @@ function renderLobby(): void {
           }).join("")}
         </div>
 
+        <div class="section-label">3. KVP-106 Cosmetic Armory (100% Visual · Zero Stat Advantage · Wave A Gasless Craft)</div>
+        <div class="pill-row" style="margin-bottom:14px;flex-wrap:wrap">
+          ${SKIN_ORDER.map((sid) => {
+            const s = SKIN_CATALOG[sid];
+            return `
+              <button class="btn ${selectedSkin === sid ? "btn-primary" : ""}" data-skin="${sid}" style="padding:6px 10px;font-size:12px">
+                <span style="display:inline-block;width:8px;height:8px;border-radius:99px;background:${s.accentHex};margin-right:6px"></span>
+                ${s.name} <span style="opacity:0.7">(${s.forgeCost === 0 ? "Free" : `${s.forgeCost} FORGE`})</span>
+              </button>
+            `;
+          }).join("")}
+        </div>
+
         <div class="lobby-footer">
           <div class="input-inline">
             <input type="text" id="input-name" maxlength="18" value="${playerName}" placeholder="CALLSIGN" />
@@ -144,6 +159,13 @@ function renderLobby(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-class]").forEach((btn) => {
     btn.onclick = () => {
       selectedClass = btn.dataset.class as ClassId;
+      renderLobby();
+    };
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-skin]").forEach((btn) => {
+    btn.onclick = () => {
+      selectedSkin = btn.dataset.skin as SkinId;
       renderLobby();
     };
   });
@@ -301,6 +323,7 @@ function startMatch(): void {
     walletAddress: wallet.address,
     sessionKeyActive: wallet.sessionKeyActive,
     stealthMetaAddress: wallet.stealthPayoutEnabled ? wallet.stealthMetaAddress : undefined,
+    skinId: selectedSkin,
   });
 }
 
