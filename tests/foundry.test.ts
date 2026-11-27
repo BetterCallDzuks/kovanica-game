@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   formatAtomsToKvnc,
+  KOVANICA_NETWORKS,
   validatePro21Address,
   validateStealthMetaAddress,
 } from "../client/src/chain/kovanicaAdapter";
@@ -470,5 +471,56 @@ describe("Phase B: KVP-106 Skins, Wave A Gasless Relayer & Escrow Tournaments", 
     expect(refunded.record!.protocolFeeKvnc).toBe(0);
     expect(refunded.record!.winnerPayouts![w1]).toBe(25);
     expect(refunded.record!.winnerPayouts![w2]).toBe(25);
+  });
+});
+
+describe("Phase C: Production Load Stability & Mainnet Cutover Config", () => {
+  it("sustains 10 concurrent 6-player rooms for 100 ticks within 20Hz budget and zero NaN", () => {
+    const modes: Array<"domination" | "vault_rush" | "core_extraction"> = [
+      "domination",
+      "vault_rush",
+      "core_extraction",
+    ];
+    const rooms: GameRoom[] = [];
+    for (let i = 0; i < 10; i++) {
+      const room = new GameRoom(`load-${i}`, modes[i % modes.length], true);
+      room.addHumanPlayer({
+        id: `h-${i}`,
+        name: `OP-${i}`,
+        classId: "striker",
+        skinId: "obsidian_gold",
+      });
+      rooms.push(room);
+    }
+
+    const startMs = performance.now();
+    for (let tick = 0; tick < 100; tick++) {
+      for (const room of rooms) {
+        room.step(TICK_MS);
+      }
+    }
+    const elapsedMs = performance.now() - startMs;
+    const meanPerTickMs = elapsedMs / 100;
+
+    // 10 concurrent rooms must comfortably run inside the 50ms 20Hz frame budget
+    expect(meanPerTickMs).toBeLessThan(35);
+
+    for (const room of rooms) {
+      const snap = room.getSnapshot();
+      expect(snap.players.length).toBe(6);
+      for (const p of snap.players) {
+        expect(Number.isFinite(p.x)).toBe(true);
+        expect(Number.isFinite(p.y)).toBe(true);
+        expect(Number.isFinite(p.z)).toBe(true);
+        expect(Number.isFinite(p.score)).toBe(true);
+      }
+    }
+  });
+
+  it("pins canonical Testnet (Chain 2) and Mainnet (Chain 1) RPCs and network tags", () => {
+    expect(KOVANICA_NETWORKS[2].rpcUrl).toBe("https://rpc-testnet.kovanica.online/rpc");
+    expect(KOVANICA_NETWORKS[2].networkTag).toBe("2-24cdb5fadd98b207");
+    expect(KOVANICA_NETWORKS[1].rpcUrl).toBe("https://rpc.kovanica.online/rpc");
+    expect(KOVANICA_NETWORKS[1].networkTag).toBe("1-f35df34c92001436");
   });
 });

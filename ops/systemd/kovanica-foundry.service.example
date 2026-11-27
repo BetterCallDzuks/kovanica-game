@@ -1,0 +1,27 @@
+[Unit]
+Description=KOVANICA: FOUNDRY Authoritative 20Hz Game Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kovanica
+Group=kovanica
+WorkingDirectory=/opt/kovanica-game
+Environment=NODE_ENV=production
+Environment=PORT=8787
+Environment=FOUNDRY_SETTLEMENT_LOG=/var/lib/kovanica-foundry/settlements.jsonl
+ExecStart=/usr/bin/npx tsx server/index.ts
+Restart=always
+RestartSec=3
+
+# Hardening & Resource Bounds
+MemoryMax=1G
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kovanica-foundry
+
+[Install]
+WantedBy=multi-user.target
