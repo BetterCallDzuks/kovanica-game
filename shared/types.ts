@@ -98,6 +98,7 @@ export interface PlayerState {
   walletAddress?: string;
   sessionKeyActive?: boolean;
   stealthMetaAddress?: string;
+  skinId?: string;
   team: TeamId;
   classId: ClassId;
   queuedClassId: ClassId;
@@ -263,6 +264,7 @@ export type ClientMessage =
       walletAddress?: string;
       sessionKeyActive?: boolean;
       stealthMetaAddress?: string;
+      skinId?: string;
     }
   | {
       type: "input";

@@ -18,6 +18,7 @@ import {
   TEAL_RELAY_POS,
   TEAL_SPAWNS,
 } from "../shared/map";
+import { getSkinById } from "../shared/cosmetics";
 import { getAimDirection, getEyePosition, raycastCombat, stepPlayerPhysics } from "../shared/physics";
 import type {
   BarrierState,
@@ -135,6 +136,7 @@ export class GameRoom {
     walletAddress?: string;
     sessionKeyActive?: boolean;
     stealthMetaAddress?: string;
+    skinId?: string;
   }): PlayerState {
     const team = this.assignTeam();
     const player = this.createPlayer({
@@ -146,6 +148,7 @@ export class GameRoom {
       walletAddress: params.walletAddress,
       sessionKeyActive: params.sessionKeyActive,
       stealthMetaAddress: params.stealthMetaAddress,
+      skinId: params.skinId,
     });
     this.players.set(player.id, player);
     if (this.fillBots) {
@@ -253,6 +256,7 @@ export class GameRoom {
     walletAddress?: string;
     sessionKeyActive?: boolean;
     stealthMetaAddress?: string;
+    skinId?: string;
   }): PlayerState {
     const cls = CLASS_CONFIGS[params.classId];
     const p: PlayerState = {
@@ -262,6 +266,7 @@ export class GameRoom {
       walletAddress: params.walletAddress,
       sessionKeyActive: params.sessionKeyActive,
       stealthMetaAddress: params.stealthMetaAddress,
+      skinId: params.skinId ?? "standard_foundry",
       team: params.team,
       classId: params.classId,
       queuedClassId: params.classId,
@@ -509,13 +514,23 @@ export class GameRoom {
       const dir = getAimDirection(shooter.yaw + yawJitter, shooter.pitch + pitchJitter);
       const hit = raycastCombat(origin, dir, weapon.range, shooter, allPlayers, this.barriers, isTeamMode);
 
+      const skin = getSkinById(shooter.skinId);
+      const tracerColor =
+        shooter.skinId && shooter.skinId !== "standard_foundry"
+          ? skin.tracerHex
+          : shooter.team === "gold"
+            ? "#F2A900"
+            : shooter.team === "teal"
+              ? "#2fbaa4"
+              : weapon.tracerColor;
+
       this.tracers.push({
         id: this.eventSeq++,
         shooterId: shooter.id,
         team: shooter.team,
         from: origin,
         to: hit.point,
-        color: shooter.team === "gold" ? "#F2A900" : shooter.team === "teal" ? "#2fbaa4" : weapon.tracerColor,
+        color: tracerColor,
         headshot: hit.headshot,
       });
 
