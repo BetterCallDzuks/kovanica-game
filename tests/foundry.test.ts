@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
+import {
+  formatAtomsToKvnc,
+  validatePro21Address,
+  validateStealthMetaAddress,
+} from "../client/src/chain/kovanicaAdapter";
 import { AntiCheatTracker, computeMatchReward } from "../server/anticheat";
 import { GameRoom } from "../server/room";
-import { CLASS_CONFIGS, TICK_MS } from "../shared/constants";
+import { EpochSettlementLedger } from "../server/settlement";
+import { CLASS_CONFIGS, DAILY_GAME_TOKEN_CAP, TICK_MS } from "../shared/constants";
 import { ARENA_HALF_X, CONTROL_NODES, GOLD_RELAY_POS, JUMP_PADS } from "../shared/map";
 import { getEyePosition, raycastCombat, stepPlayerPhysics } from "../shared/physics";
 import type { BarrierState, InputFrame, PlayerState } from "../shared/types";
@@ -213,5 +219,135 @@ describe("Anti-Cheat & Sustainable Economy Invariants", () => {
       expect(ac.recordShot("p1", 1000 + i * 5, fireRate)).toBe(false);
     }
     expect(ac.isPlayerFlagged("p1")).toBe(true);
+  });
+
+  it("flags speed hacks and extreme aim-snap loops in AntiCheatTracker", () => {
+    const acSpeed = new AntiCheatTracker();
+    for (let i = 0; i < 10; i++) {
+      expect(acSpeed.recordMovementCheck("p1", 3.5, 0.05)).toBe(false);
+    }
+    expect(acSpeed.isPlayerFlagged("p1")).toBe(true);
+
+    const acAim = new AntiCheatTracker();
+    for (let i = 0; i < 16; i++) {
+      acAim.recordAimSample("p2", i % 2 === 0 ? 0 : Math.PI);
+    }
+    expect(acAim.isPlayerFlagged("p2")).toBe(true);
+  });
+});
+
+describe("Phase A: Testnet Chain 2 Wallet, Wave C Session Key & Epoch Settlement", () => {
+  it("validates canonical PRO-21 addresses, KVP-103 stealth meta-addresses, and KVNC atoms", () => {
+    const validMainnet = `kvnc${"q".repeat(57)}dag`;
+    const validTestnet = `tknc${"p".repeat(57)}dag`;
+    expect(validatePro21Address(validMainnet)).toBe(true);
+    expect(validatePro21Address(validTestnet)).toBe(true);
+    expect(validatePro21Address("0x1234567890abcdef")).toBe(false);
+    expect(validatePro21Address("kvncshortdag")).toBe(false);
+
+    expect(validateStealthMetaAddress(`st:kvnc:${"a".repeat(64)}`)).toBe(true);
+    expect(validateStealthMetaAddress("not-a-stealth-address")).toBe(false);
+
+    expect(formatAtomsToKvnc("2500000000")).toBe("2.50");
+    expect(formatAtomsToKvnc(10_000_000_000n)).toBe("10.00");
+  });
+
+  it("requires an active Wave C Session Key for Ranked rewards and enforces 24h daily cap & win-trade guard", () => {
+    const ledger = new EpochSettlementLedger("");
+    const makeHuman = (id: string, team: "gold" | "teal", wallet: string, sessionKeyActive: boolean): PlayerState => ({
+      id,
+      name: id.toUpperCase(),
+      isBot: false,
+      walletAddress: wallet,
+      sessionKeyActive,
+      team,
+      classId: "striker",
+      queuedClassId: "striker",
+      x: 0,
+      y: 0,
+      z: 0,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      yaw: 0,
+      pitch: 0,
+      hp: 100,
+      maxHp: 100,
+      alive: true,
+      respawnMs: 0,
+      ammo: 28,
+      maxAmmo: 28,
+      reloadingMs: 0,
+      abilityCooldownMs: 0,
+      reconActiveMs: 0,
+      kills: 10,
+      deaths: 2,
+      captures: 4,
+      score: 240,
+      carriedCores: 0,
+      lastProcessedSeq: 1,
+      grounded: true,
+    });
+
+    const wA = `tknc${"a".repeat(57)}dag`;
+    const wB = `tknc${"b".repeat(57)}dag`;
+
+    // Without Session Key -> ineligible
+    const noSession = computeMatchReward({
+      hasBots: false,
+      humanCount: 2,
+      player: makeHuman("p1", "gold", wA, false),
+      won: true,
+      antiCheatStatus: "clean",
+    });
+    expect(noSession.isRewardEligible).toBe(false);
+    expect(noSession.estimatedGameToken).toBe(0);
+
+    // With Session Key -> eligible, queued with deterministic matchHash and 24h delay
+    const baseTime = Date.UTC(2026, 10, 27, 12, 0, 0);
+    const p1 = makeHuman("p1", "gold", wA, true);
+    const p2 = makeHuman("p2", "teal", wB, true);
+    const s1 = ledger.settleMatch({
+      roomId: "r-1",
+      mode: "domination",
+      tick: 500,
+      goldScore: 400,
+      tealScore: 180,
+      hasBots: false,
+      humanCount: 2,
+      players: [p1, p2],
+      winnerTeam: "gold",
+      isTeamMode: true,
+      antiCheatStatus: "clean",
+      nowMs: baseTime,
+    });
+
+    expect(s1.matchHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(s1.epochEligibleAt).toBe(new Date(baseTime + 24 * 60 * 60 * 1000).toISOString());
+    expect(s1.playerRewards["p1"].isRewardEligible).toBe(true);
+    expect(s1.playerRewards["p1"].estimatedGameToken).toBeGreaterThan(0);
+    expect(s1.playerRewards["p1"].dailyCapRemaining).toBeLessThan(DAILY_GAME_TOKEN_CAP);
+    expect(ledger.getRecords().length).toBe(2);
+
+    // Trigger win-trading guard on 4th consecutive lopsided win between same wallet pair within 1 hour
+    let lastSettled = s1;
+    for (let i = 1; i <= 3; i++) {
+      lastSettled = ledger.settleMatch({
+        roomId: `r-${i + 1}`,
+        mode: "domination",
+        tick: 500 + i,
+        goldScore: 400,
+        tealScore: 100,
+        hasBots: false,
+        humanCount: 2,
+        players: [p1, p2],
+        winnerTeam: "gold",
+        isTeamMode: true,
+        antiCheatStatus: "clean",
+        nowMs: baseTime + i * 60_000,
+      });
+    }
+    expect(lastSettled.playerRewards["p1"].status).toBe("flagged");
+    expect(lastSettled.playerRewards["p1"].estimatedGameToken).toBe(0);
   });
 });

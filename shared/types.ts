@@ -96,6 +96,8 @@ export interface PlayerState {
   name: string;
   isBot: boolean;
   walletAddress?: string;
+  sessionKeyActive?: boolean;
+  stealthMetaAddress?: string;
   team: TeamId;
   classId: ClassId;
   queuedClassId: ClassId;
@@ -191,6 +193,15 @@ export interface HitConfirmEvent {
   killed: boolean;
 }
 
+export interface PlayerSettlementReceipt {
+  isRewardEligible: boolean;
+  reason: string;
+  estimatedGameToken: number;
+  rankedPointsDelta: number;
+  dailyCapRemaining: number;
+  status: "pending_24h_review" | "flagged" | "ineligible";
+}
+
 export interface MatchEndSummary {
   mode: GameModeId;
   winnerLabel: string;
@@ -201,6 +212,9 @@ export interface MatchEndSummary {
   rewardReason: string;
   estimatedGameToken: number;
   rankedPointsDelta: number;
+  matchHash?: string;
+  epochEligibleAt?: string;
+  playerRewards?: Record<string, PlayerSettlementReceipt>;
   mvpName: string;
   mvpScore: number;
   leaderboard: Array<{
@@ -248,6 +262,7 @@ export type ClientMessage =
       fillBots: boolean;
       walletAddress?: string;
       sessionKeyActive?: boolean;
+      stealthMetaAddress?: string;
     }
   | {
       type: "input";

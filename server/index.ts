@@ -2,6 +2,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { MODE_CONFIGS, TICK_MS, TICK_RATE } from "../shared/constants";
 import type { ClientMessage, GameModeId, ServerMessage } from "../shared/types";
 import { GameRoom } from "./room";
+import { EpochSettlementLedger } from "./settlement";
 
 const PORT = Number(process.env.PORT ?? 8787);
 
@@ -13,6 +14,7 @@ interface ClientConn {
 
 const rooms = new Map<string, GameRoom>();
 const clients = new Map<WebSocket, ClientConn>();
+const settlementLedger = new EpochSettlementLedger();
 let nextId = 1;
 
 function send(ws: WebSocket, msg: ServerMessage): void {
@@ -32,7 +34,7 @@ function findOrCreateRoom(mode: GameModeId, fillBots: boolean): GameRoom {
     }
   }
   const id = `foundry-${mode.slice(0, 3)}-${nextId++}`;
-  const room = new GameRoom(id, mode, fillBots);
+  const room = new GameRoom(id, mode, fillBots, settlementLedger);
   rooms.set(id, room);
   return room;
 }
@@ -66,6 +68,8 @@ wss.on("connection", (ws) => {
         name: msg.name || "OPERATOR",
         classId: msg.classId || "striker",
         walletAddress: msg.walletAddress,
+        sessionKeyActive: msg.sessionKeyActive,
+        stealthMetaAddress: msg.stealthMetaAddress,
       });
       send(ws, {
         type: "welcome",
